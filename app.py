@@ -137,25 +137,30 @@ def decide_AB(gray: np.ndarray,
     # Différence minimale pour considérer une réponse valide
     min_diff = 0.05
     
-    # Une seule case clairement cochée
-    if (s_left >= thresh) ^ (s_right >= thresh):
-        diff = abs(s_left - s_right)
-        if diff >= min_diff:
-            if s_left > s_right:
-                return "A", float(s_left - s_right)
-            else:
-                return "B", float(s_right - s_left)
+    # Vérifier si au moins une case dépasse le seuil
+    left_above_thresh = s_left >= thresh
+    right_above_thresh = s_right >= thresh
     
-    # Si les deux cases ont des scores élevés, prendre la plus forte
-    if s_left >= thresh and s_right >= thresh:
-        diff = abs(s_left - s_right)
-        if diff >= min_diff:
-            if s_left > s_right:
-                return "A", float(s_left - s_right)
+    if left_above_thresh or right_above_thresh:
+        # Si une seule case dépasse le seuil, c'est la réponse
+        if left_above_thresh and not right_above_thresh:
+            return "B", float(s_left)  # Case gauche (OUI) = B
+        elif right_above_thresh and not left_above_thresh:
+            return "A", float(s_right)  # Case droite (NON) = A
+        
+        # Si les deux dépassent le seuil, prendre celle avec le score le plus élevé
+        elif left_above_thresh and right_above_thresh:
+            diff = abs(s_left - s_right)
+            if diff >= min_diff:
+                if s_left > s_right:
+                    return "B", float(s_left - s_right)  # Case gauche (OUI) = B
+                else:
+                    return "A", float(s_right - s_left)  # Case droite (NON) = A
             else:
-                return "B", float(s_right - s_left)
+                # Différence trop faible, considérer comme ambigu
+                return "", float(diff)
 
-    # Aucune case suffisamment cochée → non répondu
+    # Aucune case ne dépasse le seuil → non répondu
     return "", float(abs(s_left - s_right))
 
 def draw_debug(img: np.ndarray,
@@ -300,8 +305,8 @@ if uploaded is not None:
                 s_left, s_right, result = debug_scores[i]
                 debug_data.append({
                     "Question": i+1,
-                    "Score OUI": f"{s_left:.3f}",
-                    "Score NON": f"{s_right:.3f}",
+                    "Score OUI (→B)": f"{s_left:.3f}",
+                    "Score NON (→A)": f"{s_right:.3f}",
                     "Résultat": result,
                     "Différence": f"{abs(s_left - s_right):.3f}"
                 })
