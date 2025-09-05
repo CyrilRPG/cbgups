@@ -138,7 +138,16 @@ def decide_AB(gray: np.ndarray,
         return "A", float(s_right)  # Case droite (NON) = A
     elif left_checked and right_checked:
         # Les deux cases cochées - prendre la plus sombre
-        if s_left > s_right:
+        diff = abs(s_left - s_right)
+        if diff < 0.1:  # Différence très faible (quasi-égalité)
+            # En cas d'égalité, regarder l'intensité brute
+            left_intensity = inner_roi(gray, left).mean()
+            right_intensity = inner_roi(gray, right).mean()
+            if left_intensity < right_intensity:  # Plus sombre = plus cochée
+                return "B", float(s_left)
+            else:
+                return "A", float(s_right)
+        elif s_left > s_right:
             return "B", float(s_left - s_right)  # Case gauche (OUI) = B
         else:
             return "A", float(s_right - s_left)  # Case droite (NON) = A
@@ -251,7 +260,9 @@ if uploaded is not None:
         left, right = pair
         s_left = mark_score(inner_roi(gray, left))
         s_right = mark_score(inner_roi(gray, right))
-        debug_scores.append((s_left, s_right, r, left, right))  # Ajouter les coordonnées
+        left_intensity = inner_roi(gray, left).mean()
+        right_intensity = inner_roi(gray, right).mean()
+        debug_scores.append((s_left, s_right, r, left, right, left_intensity, right_intensity))
 
     # 5) Tronquer/padder à expected_questions (sécurité)
     if len(results) >= expected_questions:
@@ -285,11 +296,13 @@ if uploaded is not None:
             st.subheader("Scores de débogage (10 premières questions)")
             debug_data = []
             for i in range(min(10, len(debug_scores))):
-                s_left, s_right, result, left_box, right_box = debug_scores[i]
+                s_left, s_right, result, left_box, right_box, left_int, right_int = debug_scores[i]
                 debug_data.append({
                     "Question": i+1,
                     "Score Gauche": f"{s_left:.3f}",
                     "Score Droite": f"{s_right:.3f}",
+                    "Intensité Gauche": f"{left_int:.1f}",
+                    "Intensité Droite": f"{right_int:.1f}",
                     "Résultat": result,
                     "X Gauche": left_box[0],
                     "X Droite": right_box[0],
