@@ -127,22 +127,22 @@ def decide_AB(gray: np.ndarray,
     right_intensity = inner_roi(gray, right).mean()
     
     # Seuil d'intensité pour considérer qu'une case est cochée
-    intensity_threshold = 150  # Plus sombre que 150 = cochée
+    intensity_threshold = 180  # Plus sombre que 180 = cochée
     
     # Logique simple basée sur l'intensité
     left_checked = left_intensity < intensity_threshold
     right_checked = right_intensity < intensity_threshold
     
     if left_checked and not right_checked:
-        return "B", float(s_left)  # Case gauche (OUI) = B
+        return "A", float(s_left)  # Case gauche (OUI) = A
     elif right_checked and not left_checked:
-        return "A", float(s_right)  # Case droite (NON) = A
+        return "B", float(s_right)  # Case droite (NON) = B
     elif left_checked and right_checked:
         # Les deux cases cochées - prendre la plus sombre
         if left_intensity < right_intensity:
-            return "B", float(s_left)
+            return "A", float(s_left)  # Case gauche (OUI) = A
         else:
-            return "A", float(s_right)
+            return "B", float(s_right)  # Case droite (NON) = B
     else:
         # Aucune case suffisamment cochée
         return "", float(abs(s_left - s_right))
@@ -213,11 +213,11 @@ with st.sidebar:
     expected_questions = st.number_input("Nombre de questions", min_value=1, value=125, step=1)
     questions_per_col = st.number_input("Questions par colonne", 1, 50, 25, 1)
     thresh = st.slider("Seuil de marquage (0–1)", 0.05, 0.80, 0.10, 0.01)
-    min_area = st.number_input("Aire min. case", 50, 10000, 50, 10)
-    max_area = st.number_input("Aire max. case", 200, 30000, 20000, 50)
-    squareness_tol = st.slider("Tolérance carré", 0.0, 0.8, 0.80, 0.01)
-    y_tol = st.number_input("Tolérance verticale (lignes)", 2, 60, 30, 1)
-    x_gap_tol = st.number_input("Tolérance horizontale (paires)", 2, 80, 35, 1)
+    min_area = st.number_input("Aire min. case", 50, 10000, 40, 10)
+    max_area = st.number_input("Aire max. case", 200, 30000, 25000, 50)
+    squareness_tol = st.slider("Tolérance carré", 0.0, 0.8, 0.85, 0.01)
+    y_tol = st.number_input("Tolérance verticale (lignes)", 2, 60, 35, 1)
+    x_gap_tol = st.number_input("Tolérance horizontale (paires)", 2, 80, 40, 1)
 
 uploaded = st.file_uploader("Dépose une image (JPG/PNG)", type=["png", "jpg", "jpeg"])
 
