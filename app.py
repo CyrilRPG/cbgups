@@ -58,56 +58,34 @@ def inner_roi(gray: np.ndarray, box: Tuple[int,int,int,int], margin: float = 0.1
 
 def mark_score(roi_gray: np.ndarray) -> float:
     """
-    Score 0..1 indiquant si la case est cochée (noircissage ou croix).
-    Version très sensible pour détecter les cases noircies.
+    Score 0..1 indiquant si la case est cochée (noircissage).
+    Version simplifiée et plus précise.
     """
     if roi_gray.size == 0:
         return 0.0
 
-    # Méthode 1: Intensité moyenne (très sensible)
+    # Intensité moyenne - méthode principale
     mean_intensity = roi_gray.mean()
-    mean_dark = 1.0 - (mean_intensity / 255.0)
     
-    # Méthode 2: Seuils multiples pour détecter différents niveaux de noirceur
-    threshold_very_dark = 50   # Très sombre
-    threshold_dark = 100       # Sombre
-    threshold_medium = 150     # Moyennement sombre
+    # Score basé sur l'intensité moyenne (plus c'est sombre, plus le score est élevé)
+    # Cases vides: ~200-255, Cases noircies: ~50-150
+    if mean_intensity < 50:
+        score = 1.0  # Très sombre
+    elif mean_intensity < 100:
+        score = 0.9  # Sombre
+    elif mean_intensity < 150:
+        score = 0.7  # Moyennement sombre
+    elif mean_intensity < 200:
+        score = 0.3  # Clair
+    else:
+        score = 0.0  # Très clair (vide)
     
-    very_dark_ratio = np.sum(roi_gray < threshold_very_dark) / roi_gray.size
-    dark_ratio = np.sum(roi_gray < threshold_dark) / roi_gray.size
-    medium_dark_ratio = np.sum(roi_gray < threshold_medium) / roi_gray.size
+    # Bonus pour les cases avec beaucoup de pixels très sombres
+    very_dark_pixels = np.sum(roi_gray < 80)
+    if very_dark_pixels > roi_gray.size * 0.3:  # Plus de 30% de pixels très sombres
+        score = min(1.0, score + 0.2)
     
-    # Méthode 3: Seuil Otsu adaptatif
-    _, thr_otsu = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    dark_ratio_otsu = float((thr_otsu == 0).sum()) / float(roi_gray.size)
-    
-    # Méthode 4: Détection de croix (conservée)
-    edges = cv2.Canny(roi_gray, 20, 80, L2gradient=True)
-    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=5,
-                            minLineLength=max(2, roi_gray.shape[1] // 5),
-                            maxLineGap=2)
-    line_bonus = 0.2 if (lines is not None and len(lines) >= 2) else 0.0
-    
-    # Méthode 5: Histogramme - favoriser les pixels sombres
-    hist = cv2.calcHist([roi_gray], [0], None, [256], [0, 256])
-    dark_hist_score = np.sum(hist[:100]) / np.sum(hist)  # Pixels 0-99
-    
-    # Combinaison pondérée très sensible
-    score = (0.3 * mean_dark + 
-             0.25 * very_dark_ratio + 
-             0.2 * dark_ratio + 
-             0.1 * medium_dark_ratio + 
-             0.1 * dark_ratio_otsu + 
-             0.05 * dark_hist_score + 
-             line_bonus)
-    
-    # Amplifier le score pour les cases vraiment noircies
-    if mean_intensity < 80:  # Case très sombre
-        score = min(1.0, score * 1.5)
-    elif mean_intensity < 120:  # Case sombre
-        score = min(1.0, score * 1.2)
-    
-    return float(max(0.0, min(1.0, score)))
+    return float(score)
 
 def group_into_rows(boxes: List[Tuple[int,int,int,int]], y_tol: int = 12) -> List[List[Tuple[int,int,int,int]]]:
     if not boxes:
@@ -145,34 +123,28 @@ def decide_AB(gray: np.ndarray,
     s_left = mark_score(inner_roi(gray, left))
     s_right = mark_score(inner_roi(gray, right))
 
-    # Différence minimale pour considérer une réponse valide
-    min_diff = 0.05
+    # Seuil pour considérer qu'une case est cochée
+    # Basé sur vos données : les cases noircies ont des scores > 0.4
+    checkbox_threshold = 0.4
     
-    # Vérifier si au moins une case dépasse le seuil
-    left_above_thresh = s_left >= thresh
-    right_above_thresh = s_right >= thresh
+    # Vérifier si chaque case est cochée
+    left_checked = s_left >= checkbox_threshold
+    right_checked = s_right >= checkbox_threshold
     
-    if left_above_thresh or right_above_thresh:
-        # Si une seule case dépasse le seuil, c'est la réponse
-        if left_above_thresh and not right_above_thresh:
-            return "A", float(s_left)  # Case gauche (OUI) = A
-        elif right_above_thresh and not left_above_thresh:
-            return "B", float(s_right)  # Case droite (NON) = B
-        
-        # Si les deux dépassent le seuil, prendre celle avec le score le plus élevé
-        elif left_above_thresh and right_above_thresh:
-            diff = abs(s_left - s_right)
-            if diff >= min_diff:
-                if s_left > s_right:
-                    return "A", float(s_left - s_right)  # Case gauche (OUI) = A
-                else:
-                    return "B", float(s_right - s_left)  # Case droite (NON) = B
-            else:
-                # Différence trop faible, considérer comme ambigu
-                return "", float(diff)
-
-    # Aucune case ne dépasse le seuil → non répondu
-    return "", float(abs(s_left - s_right))
+    # Logique simple : si une seule case est cochée, c'est la réponse
+    if left_checked and not right_checked:
+        return "B", float(s_left)  # Case gauche (OUI) = B
+    elif right_checked and not left_checked:
+        return "A", float(s_right)  # Case droite (NON) = A
+    elif left_checked and right_checked:
+        # Les deux cases cochées - prendre la plus sombre
+        if s_left > s_right:
+            return "B", float(s_left - s_right)  # Case gauche (OUI) = B
+        else:
+            return "A", float(s_right - s_left)  # Case droite (NON) = A
+    else:
+        # Aucune case cochée
+        return "", float(abs(s_left - s_right))
 
 def draw_debug(img: np.ndarray,
                pairs: List[Tuple[Tuple[int,int,int,int], Tuple[int,int,int,int]]],
@@ -279,7 +251,7 @@ if uploaded is not None:
         left, right = pair
         s_left = mark_score(inner_roi(gray, left))
         s_right = mark_score(inner_roi(gray, right))
-        debug_scores.append((s_left, s_right, r))
+        debug_scores.append((s_left, s_right, r, left, right))  # Ajouter les coordonnées
 
     # 5) Tronquer/padder à expected_questions (sécurité)
     if len(results) >= expected_questions:
@@ -313,12 +285,14 @@ if uploaded is not None:
             st.subheader("Scores de débogage (10 premières questions)")
             debug_data = []
             for i in range(min(10, len(debug_scores))):
-                s_left, s_right, result = debug_scores[i]
+                s_left, s_right, result, left_box, right_box = debug_scores[i]
                 debug_data.append({
                     "Question": i+1,
-                    "Score OUI (→A)": f"{s_left:.3f}",
-                    "Score NON (→B)": f"{s_right:.3f}",
+                    "Score Gauche": f"{s_left:.3f}",
+                    "Score Droite": f"{s_right:.3f}",
                     "Résultat": result,
+                    "X Gauche": left_box[0],
+                    "X Droite": right_box[0],
                     "Différence": f"{abs(s_left - s_right):.3f}"
                 })
             st.dataframe(pd.DataFrame(debug_data), use_container_width=True)
