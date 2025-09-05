@@ -200,7 +200,7 @@ with st.sidebar:
     expected_questions = st.number_input("Nombre de questions", min_value=1, value=125, step=1)
     questions_per_col = st.number_input("Questions par colonne", 1, 50, 25, 1)
     thresh = st.slider("Seuil de marquage (0–1)", 0.05, 0.80, 0.10, 0.01)
-    min_area = st.number_input("Aire min. case", 50, 10000, 40, 10)
+    min_area = st.number_input("Aire min. case", 50, 10000, 50, 10)
     max_area = st.number_input("Aire max. case", 200, 30000, 15000, 50)
     squareness_tol = st.slider("Tolérance carré", 0.0, 0.8, 0.70, 0.01)
     y_tol = st.number_input("Tolérance verticale (lignes)", 2, 60, 25, 1)
