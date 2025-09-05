@@ -59,42 +59,53 @@ def inner_roi(gray: np.ndarray, box: Tuple[int,int,int,int], margin: float = 0.1
 def mark_score(roi_gray: np.ndarray) -> float:
     """
     Score 0..1 indiquant si la case est cochée (noircissage ou croix).
-    Version améliorée pour mieux détecter les cases noircies.
+    Version très sensible pour détecter les cases noircies.
     """
     if roi_gray.size == 0:
         return 0.0
 
-    # Méthode 1: Intensité moyenne (plus sensible aux cases noircies)
+    # Méthode 1: Intensité moyenne (très sensible)
     mean_intensity = roi_gray.mean()
     mean_dark = 1.0 - (mean_intensity / 255.0)
     
-    # Méthode 2: Seuil adaptatif plus agressif
-    # Utiliser un seuil fixe plus bas pour détecter les cases partiellement noircies
-    threshold_fixed = 100  # Seuil fixe plus bas
-    dark_pixels = np.sum(roi_gray < threshold_fixed)
-    dark_ratio_fixed = dark_pixels / roi_gray.size
+    # Méthode 2: Seuils multiples pour détecter différents niveaux de noirceur
+    threshold_very_dark = 50   # Très sombre
+    threshold_dark = 100       # Sombre
+    threshold_medium = 150     # Moyennement sombre
     
-    # Méthode 3: Seuil Otsu (conservé mais avec pondération réduite)
+    very_dark_ratio = np.sum(roi_gray < threshold_very_dark) / roi_gray.size
+    dark_ratio = np.sum(roi_gray < threshold_dark) / roi_gray.size
+    medium_dark_ratio = np.sum(roi_gray < threshold_medium) / roi_gray.size
+    
+    # Méthode 3: Seuil Otsu adaptatif
     _, thr_otsu = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     dark_ratio_otsu = float((thr_otsu == 0).sum()) / float(roi_gray.size)
     
     # Méthode 4: Détection de croix (conservée)
-    edges = cv2.Canny(roi_gray, 30, 100, L2gradient=True)
-    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=8,
-                            minLineLength=max(3, roi_gray.shape[1] // 4),
-                            maxLineGap=3)
-    line_bonus = 0.15 if (lines is not None and len(lines) >= 2) else 0.0
+    edges = cv2.Canny(roi_gray, 20, 80, L2gradient=True)
+    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=5,
+                            minLineLength=max(2, roi_gray.shape[1] // 5),
+                            maxLineGap=2)
+    line_bonus = 0.2 if (lines is not None and len(lines) >= 2) else 0.0
     
-    # Méthode 5: Variance (cases noircies ont souvent une variance plus faible)
-    variance = np.var(roi_gray)
-    variance_score = max(0, 1.0 - (variance / (255**2))) * 0.1
+    # Méthode 5: Histogramme - favoriser les pixels sombres
+    hist = cv2.calcHist([roi_gray], [0], None, [256], [0, 256])
+    dark_hist_score = np.sum(hist[:100]) / np.sum(hist)  # Pixels 0-99
     
-    # Combinaison pondérée (plus de poids sur les méthodes qui marchent bien)
-    score = (0.4 * mean_dark + 
-             0.35 * dark_ratio_fixed + 
-             0.15 * dark_ratio_otsu + 
-             0.1 * variance_score + 
+    # Combinaison pondérée très sensible
+    score = (0.3 * mean_dark + 
+             0.25 * very_dark_ratio + 
+             0.2 * dark_ratio + 
+             0.1 * medium_dark_ratio + 
+             0.1 * dark_ratio_otsu + 
+             0.05 * dark_hist_score + 
              line_bonus)
+    
+    # Amplifier le score pour les cases vraiment noircies
+    if mean_intensity < 80:  # Case très sombre
+        score = min(1.0, score * 1.5)
+    elif mean_intensity < 120:  # Case sombre
+        score = min(1.0, score * 1.2)
     
     return float(max(0.0, min(1.0, score)))
 
@@ -144,18 +155,18 @@ def decide_AB(gray: np.ndarray,
     if left_above_thresh or right_above_thresh:
         # Si une seule case dépasse le seuil, c'est la réponse
         if left_above_thresh and not right_above_thresh:
-            return "B", float(s_left)  # Case gauche (OUI) = B
+            return "A", float(s_left)  # Case gauche (OUI) = A
         elif right_above_thresh and not left_above_thresh:
-            return "A", float(s_right)  # Case droite (NON) = A
+            return "B", float(s_right)  # Case droite (NON) = B
         
         # Si les deux dépassent le seuil, prendre celle avec le score le plus élevé
         elif left_above_thresh and right_above_thresh:
             diff = abs(s_left - s_right)
             if diff >= min_diff:
                 if s_left > s_right:
-                    return "B", float(s_left - s_right)  # Case gauche (OUI) = B
+                    return "A", float(s_left - s_right)  # Case gauche (OUI) = A
                 else:
-                    return "A", float(s_right - s_left)  # Case droite (NON) = A
+                    return "B", float(s_right - s_left)  # Case droite (NON) = B
             else:
                 # Différence trop faible, considérer comme ambigu
                 return "", float(diff)
@@ -228,7 +239,7 @@ with st.sidebar:
     st.header("Paramètres")
     expected_questions = st.number_input("Nombre de questions", min_value=1, value=125, step=1)
     questions_per_col = st.number_input("Questions par colonne", 1, 50, 25, 1)
-    thresh = st.slider("Seuil de marquage (0–1)", 0.05, 0.80, 0.15, 0.01)
+    thresh = st.slider("Seuil de marquage (0–1)", 0.05, 0.80, 0.10, 0.01)
     min_area = st.number_input("Aire min. case", 50, 10000, 120, 10)
     max_area = st.number_input("Aire max. case", 200, 30000, 6000, 50)
     squareness_tol = st.slider("Tolérance carré", 0.0, 0.8, 0.40, 0.01)
@@ -305,8 +316,8 @@ if uploaded is not None:
                 s_left, s_right, result = debug_scores[i]
                 debug_data.append({
                     "Question": i+1,
-                    "Score OUI (→B)": f"{s_left:.3f}",
-                    "Score NON (→A)": f"{s_right:.3f}",
+                    "Score OUI (→A)": f"{s_left:.3f}",
+                    "Score NON (→B)": f"{s_right:.3f}",
                     "Résultat": result,
                     "Différence": f"{abs(s_left - s_right):.3f}"
                 })
