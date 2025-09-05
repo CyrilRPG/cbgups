@@ -133,9 +133,9 @@ def decide_AB(gray: np.ndarray,
     
     # Logique simple : si une seule case est cochée, c'est la réponse
     if left_checked and not right_checked:
-        return "B", float(s_left)  # Case gauche (OUI) = B
+        return "A", float(s_left)  # Case gauche (OUI) = A
     elif right_checked and not left_checked:
-        return "A", float(s_right)  # Case droite (NON) = A
+        return "B", float(s_right)  # Case droite (NON) = B
     elif left_checked and right_checked:
         # Les deux cases cochées - prendre la plus sombre
         diff = abs(s_left - s_right)
@@ -144,13 +144,13 @@ def decide_AB(gray: np.ndarray,
             left_intensity = inner_roi(gray, left).mean()
             right_intensity = inner_roi(gray, right).mean()
             if left_intensity < right_intensity:  # Plus sombre = plus cochée
-                return "B", float(s_left)
+                return "A", float(s_left)  # Case gauche (OUI) = A
             else:
-                return "A", float(s_right)
+                return "B", float(s_right)  # Case droite (NON) = B
         elif s_left > s_right:
-            return "B", float(s_left - s_right)  # Case gauche (OUI) = B
+            return "A", float(s_left - s_right)  # Case gauche (OUI) = A
         else:
-            return "A", float(s_right - s_left)  # Case droite (NON) = A
+            return "B", float(s_right - s_left)  # Case droite (NON) = B
     else:
         # Aucune case cochée
         return "", float(abs(s_left - s_right))
@@ -221,11 +221,11 @@ with st.sidebar:
     expected_questions = st.number_input("Nombre de questions", min_value=1, value=125, step=1)
     questions_per_col = st.number_input("Questions par colonne", 1, 50, 25, 1)
     thresh = st.slider("Seuil de marquage (0–1)", 0.05, 0.80, 0.10, 0.01)
-    min_area = st.number_input("Aire min. case", 50, 10000, 120, 10)
-    max_area = st.number_input("Aire max. case", 200, 30000, 6000, 50)
-    squareness_tol = st.slider("Tolérance carré", 0.0, 0.8, 0.40, 0.01)
-    y_tol = st.number_input("Tolérance verticale (lignes)", 2, 60, 12, 1)
-    x_gap_tol = st.number_input("Tolérance horizontale (paires)", 2, 80, 14, 1)
+    min_area = st.number_input("Aire min. case", 50, 10000, 80, 10)
+    max_area = st.number_input("Aire max. case", 200, 30000, 8000, 50)
+    squareness_tol = st.slider("Tolérance carré", 0.0, 0.8, 0.50, 0.01)
+    y_tol = st.number_input("Tolérance verticale (lignes)", 2, 60, 15, 1)
+    x_gap_tol = st.number_input("Tolérance horizontale (paires)", 2, 80, 20, 1)
 
 uploaded = st.file_uploader("Dépose une image (JPG/PNG)", type=["png", "jpg", "jpeg"])
 
@@ -285,17 +285,31 @@ if uploaded is not None:
         debug = draw_debug(img_bgr, pairs_5x25, results)
         st.image(cv2.cvtColor(debug, cv2.COLOR_BGR2RGB), use_container_width=True)
         st.caption(f"Paires détectées: {len(all_pairs)} | Utilisées (5×{questions_per_col}): {len(pairs_5x25)}")
+        
+        # Affichage des détails de détection
+        with st.expander("Détails de détection"):
+            st.write(f"**Cases détectées:** {len(boxes)}")
+            st.write(f"**Lignes groupées:** {len(rows)}")
+            st.write(f"**Paires formées:** {len(all_pairs)}")
+            st.write(f"**Colonnes détectées:** {len(cols)}")
+            st.write(f"**Paires finales:** {len(pairs_5x25)}")
+            
+            # Afficher les coordonnées des premières paires pour debug
+            if pairs_5x25:
+                st.write("**Coordonnées des 10 premières paires:**")
+                for i, (left, right) in enumerate(pairs_5x25[:10]):
+                    st.write(f"Q{i+1}: Gauche({left[0]},{left[1]}) Droite({right[0]},{right[1]})")
     with c2:
         st.subheader("Aperçu Excel (A/B)")
         st.dataframe(df_ab, use_container_width=True, height=180)
         with st.expander("Confiance (0–1)"):
             st.dataframe(df_conf, use_container_width=True, height=140)
         
-        # Affichage des scores de débogage pour les 10 premières questions
+        # Affichage des scores de débogage pour toutes les questions détectées
         if debug_scores:
-            st.subheader("Scores de débogage (10 premières questions)")
+            st.subheader(f"Scores de débogage ({len(debug_scores)} questions détectées)")
             debug_data = []
-            for i in range(min(10, len(debug_scores))):
+            for i in range(len(debug_scores)):
                 s_left, s_right, result, left_box, right_box, left_int, right_int = debug_scores[i]
                 debug_data.append({
                     "Question": i+1,
