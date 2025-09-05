@@ -1,0 +1,6 @@
+streamlit>=1.36
+opencv-python-headless>=4.10
+pillow>=10.4
+numpy>=1.26
+pandas>=2.2
+openpyxl>=3.1
