@@ -59,28 +59,43 @@ def inner_roi(gray: np.ndarray, box: Tuple[int,int,int,int], margin: float = 0.1
 def mark_score(roi_gray: np.ndarray) -> float:
     """
     Score 0..1 indiquant si la case est cochée (noircissage ou croix).
-    Combine:
-      - 1 - mean_intensity/255
-      - proportion sombre (Otsu local)
-      - présence de lignes (croix) via Hough
+    Version améliorée pour mieux détecter les cases noircies.
     """
     if roi_gray.size == 0:
         return 0.0
 
-    mean_dark = 1.0 - (roi_gray.mean() / 255.0)
-
-    # densité sombre relative
-    _, thr = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    dark_ratio = float((thr == 0).sum()) / float(roi_gray.size)
-
-    # croix (2 segments ou plus)
-    edges = cv2.Canny(roi_gray, 40, 120, L2gradient=True)
-    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=10,
-                            minLineLength=max(4, roi_gray.shape[1] // 3),
-                            maxLineGap=4)
-    line_bonus = 0.18 if (lines is not None and len(lines) >= 2) else 0.0
-
-    score = 0.55 * mean_dark + 0.45 * dark_ratio + line_bonus
+    # Méthode 1: Intensité moyenne (plus sensible aux cases noircies)
+    mean_intensity = roi_gray.mean()
+    mean_dark = 1.0 - (mean_intensity / 255.0)
+    
+    # Méthode 2: Seuil adaptatif plus agressif
+    # Utiliser un seuil fixe plus bas pour détecter les cases partiellement noircies
+    threshold_fixed = 100  # Seuil fixe plus bas
+    dark_pixels = np.sum(roi_gray < threshold_fixed)
+    dark_ratio_fixed = dark_pixels / roi_gray.size
+    
+    # Méthode 3: Seuil Otsu (conservé mais avec pondération réduite)
+    _, thr_otsu = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    dark_ratio_otsu = float((thr_otsu == 0).sum()) / float(roi_gray.size)
+    
+    # Méthode 4: Détection de croix (conservée)
+    edges = cv2.Canny(roi_gray, 30, 100, L2gradient=True)
+    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=8,
+                            minLineLength=max(3, roi_gray.shape[1] // 4),
+                            maxLineGap=3)
+    line_bonus = 0.15 if (lines is not None and len(lines) >= 2) else 0.0
+    
+    # Méthode 5: Variance (cases noircies ont souvent une variance plus faible)
+    variance = np.var(roi_gray)
+    variance_score = max(0, 1.0 - (variance / (255**2))) * 0.1
+    
+    # Combinaison pondérée (plus de poids sur les méthodes qui marchent bien)
+    score = (0.4 * mean_dark + 
+             0.35 * dark_ratio_fixed + 
+             0.15 * dark_ratio_otsu + 
+             0.1 * variance_score + 
+             line_bonus)
+    
     return float(max(0.0, min(1.0, score)))
 
 def group_into_rows(boxes: List[Tuple[int,int,int,int]], y_tol: int = 12) -> List[List[Tuple[int,int,int,int]]]:
@@ -119,14 +134,28 @@ def decide_AB(gray: np.ndarray,
     s_left = mark_score(inner_roi(gray, left))
     s_right = mark_score(inner_roi(gray, right))
 
+    # Différence minimale pour considérer une réponse valide
+    min_diff = 0.05
+    
     # Une seule case clairement cochée
     if (s_left >= thresh) ^ (s_right >= thresh):
-        if s_left > s_right:
-            return "A", float(s_left - s_right)
-        else:
-            return "B", float(s_right - s_left)
+        diff = abs(s_left - s_right)
+        if diff >= min_diff:
+            if s_left > s_right:
+                return "A", float(s_left - s_right)
+            else:
+                return "B", float(s_right - s_left)
+    
+    # Si les deux cases ont des scores élevés, prendre la plus forte
+    if s_left >= thresh and s_right >= thresh:
+        diff = abs(s_left - s_right)
+        if diff >= min_diff:
+            if s_left > s_right:
+                return "A", float(s_left - s_right)
+            else:
+                return "B", float(s_right - s_left)
 
-    # Aucune (ou les deux) → non répondu
+    # Aucune case suffisamment cochée → non répondu
     return "", float(abs(s_left - s_right))
 
 def draw_debug(img: np.ndarray,
@@ -194,7 +223,7 @@ with st.sidebar:
     st.header("Paramètres")
     expected_questions = st.number_input("Nombre de questions", min_value=1, value=125, step=1)
     questions_per_col = st.number_input("Questions par colonne", 1, 50, 25, 1)
-    thresh = st.slider("Seuil de marquage (0–1)", 0.05, 0.70, 0.22, 0.01)
+    thresh = st.slider("Seuil de marquage (0–1)", 0.05, 0.80, 0.15, 0.01)
     min_area = st.number_input("Aire min. case", 50, 10000, 120, 10)
     max_area = st.number_input("Aire max. case", 200, 30000, 6000, 50)
     squareness_tol = st.slider("Tolérance carré", 0.0, 0.8, 0.40, 0.01)
@@ -224,10 +253,17 @@ if uploaded is not None:
 
     # 4) Décision A/B/"" question par question
     results, confidences = [], []
-    for pair in pairs_5x25:
+    debug_scores = []  # Pour le débogage
+    for i, pair in enumerate(pairs_5x25):
         r, c = decide_AB(gray, pair, thresh=thresh)
         results.append(r)
         confidences.append(c)
+        
+        # Calculer les scores individuels pour le débogage
+        left, right = pair
+        s_left = mark_score(inner_roi(gray, left))
+        s_right = mark_score(inner_roi(gray, right))
+        debug_scores.append((s_left, s_right, r))
 
     # 5) Tronquer/padder à expected_questions (sécurité)
     if len(results) >= expected_questions:
@@ -255,6 +291,21 @@ if uploaded is not None:
         st.dataframe(df_ab, use_container_width=True, height=180)
         with st.expander("Confiance (0–1)"):
             st.dataframe(df_conf, use_container_width=True, height=140)
+        
+        # Affichage des scores de débogage pour les 10 premières questions
+        if debug_scores:
+            st.subheader("Scores de débogage (10 premières questions)")
+            debug_data = []
+            for i in range(min(10, len(debug_scores))):
+                s_left, s_right, result = debug_scores[i]
+                debug_data.append({
+                    "Question": i+1,
+                    "Score OUI": f"{s_left:.3f}",
+                    "Score NON": f"{s_right:.3f}",
+                    "Résultat": result,
+                    "Différence": f"{abs(s_left - s_right):.3f}"
+                })
+            st.dataframe(pd.DataFrame(debug_data), use_container_width=True)
 
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as w:
