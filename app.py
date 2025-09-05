@@ -45,8 +45,8 @@ def find_checkbox_contours(bin_img: np.ndarray,
         ratio = abs(w - h) / max(w, h)
         if ratio > squareness_tol:
             continue
-        # éviter les bords (plus permissif)
-        if x < 3 or y < 3 or x + w > W - 3 or y + h > H - 3:
+        # éviter les bords (très permissif)
+        if x < 1 or y < 1 or x + w > W - 1 or y + h > H - 1:
             continue
         boxes.append((x, y, w, h))
     return boxes
@@ -59,26 +59,32 @@ def inner_roi(gray: np.ndarray, box: Tuple[int,int,int,int], margin: float = 0.1
 def mark_score(roi_gray: np.ndarray) -> float:
     """
     Score 0..1 indiquant si la case est cochée (noircissage).
-    Version très simple basée uniquement sur l'intensité moyenne.
+    Version basée sur l'intensité moyenne avec seuils adaptatifs.
     """
     if roi_gray.size == 0:
         return 0.0
 
-    # Intensité moyenne - méthode unique et simple
+    # Intensité moyenne
     mean_intensity = roi_gray.mean()
     
-    # Score direct basé sur l'intensité (plus c'est sombre, plus le score est élevé)
-    # Cases vides: ~200-255, Cases noircies: ~50-150
-    if mean_intensity < 60:
+    # Score basé sur l'intensité (plus c'est sombre, plus le score est élevé)
+    # Utiliser des seuils plus fins pour différencier les cases
+    if mean_intensity < 50:
         return 1.0  # Très sombre
-    elif mean_intensity < 120:
+    elif mean_intensity < 80:
         return 0.9  # Sombre
-    elif mean_intensity < 180:
-        return 0.7  # Moyennement sombre
-    elif mean_intensity < 220:
+    elif mean_intensity < 110:
+        return 0.8  # Moyennement sombre
+    elif mean_intensity < 140:
+        return 0.7  # Légèrement sombre
+    elif mean_intensity < 170:
+        return 0.5  # Moyen
+    elif mean_intensity < 200:
         return 0.3  # Clair
+    elif mean_intensity < 230:
+        return 0.1  # Très clair
     else:
-        return 0.0  # Très clair (vide)
+        return 0.0  # Blanc (vide)
 
 def group_into_rows(boxes: List[Tuple[int,int,int,int]], y_tol: int = 12) -> List[List[Tuple[int,int,int,int]]]:
     if not boxes:
@@ -116,20 +122,33 @@ def decide_AB(gray: np.ndarray,
     s_left = mark_score(inner_roi(gray, left))
     s_right = mark_score(inner_roi(gray, right))
 
-    # Seuil très bas pour détecter les cases noircies
-    checkbox_threshold = 0.3
+    # Seuil pour considérer qu'une case est cochée
+    checkbox_threshold = 0.5
     
-    # Logique très simple : prendre la case avec le score le plus élevé
-    if s_left > s_right and s_left >= checkbox_threshold:
+    # Différence minimale pour considérer une réponse valide
+    min_diff = 0.1
+    
+    # Logique de décision
+    if s_left >= checkbox_threshold and s_right < checkbox_threshold:
         return "B", float(s_left)  # Case gauche (OUI) = B
-    elif s_right > s_left and s_right >= checkbox_threshold:
+    elif s_right >= checkbox_threshold and s_left < checkbox_threshold:
         return "A", float(s_right)  # Case droite (NON) = A
     elif s_left >= checkbox_threshold and s_right >= checkbox_threshold:
-        # Les deux cases cochées - prendre la plus sombre (score le plus élevé)
-        if s_left > s_right:
-            return "B", float(s_left)
+        # Les deux cases cochées - prendre la plus sombre
+        diff = abs(s_left - s_right)
+        if diff >= min_diff:
+            if s_left > s_right:
+                return "B", float(s_left)
+            else:
+                return "A", float(s_right)
         else:
-            return "A", float(s_right)
+            # Différence trop faible - regarder l'intensité brute
+            left_intensity = inner_roi(gray, left).mean()
+            right_intensity = inner_roi(gray, right).mean()
+            if left_intensity < right_intensity:  # Plus sombre
+                return "B", float(s_left)
+            else:
+                return "A", float(s_right)
     else:
         # Aucune case suffisamment cochée
         return "", float(abs(s_left - s_right))
@@ -200,11 +219,11 @@ with st.sidebar:
     expected_questions = st.number_input("Nombre de questions", min_value=1, value=125, step=1)
     questions_per_col = st.number_input("Questions par colonne", 1, 50, 25, 1)
     thresh = st.slider("Seuil de marquage (0–1)", 0.05, 0.80, 0.10, 0.01)
-    min_area = st.number_input("Aire min. case", 50, 10000, 50, 10)
-    max_area = st.number_input("Aire max. case", 200, 30000, 15000, 50)
-    squareness_tol = st.slider("Tolérance carré", 0.0, 0.8, 0.70, 0.01)
-    y_tol = st.number_input("Tolérance verticale (lignes)", 2, 60, 25, 1)
-    x_gap_tol = st.number_input("Tolérance horizontale (paires)", 2, 80, 30, 1)
+    min_area = st.number_input("Aire min. case", 50, 10000, 30, 10)
+    max_area = st.number_input("Aire max. case", 200, 30000, 20000, 50)
+    squareness_tol = st.slider("Tolérance carré", 0.0, 0.8, 0.80, 0.01)
+    y_tol = st.number_input("Tolérance verticale (lignes)", 2, 60, 30, 1)
+    x_gap_tol = st.number_input("Tolérance horizontale (paires)", 2, 80, 35, 1)
 
 uploaded = st.file_uploader("Dépose une image (JPG/PNG)", type=["png", "jpg", "jpeg"])
 
