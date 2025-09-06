@@ -122,27 +122,20 @@ def decide_AB(gray: np.ndarray,
     s_left = mark_score(inner_roi(gray, left))
     s_right = mark_score(inner_roi(gray, right))
 
-    # Utiliser l'intensité brute comme critère principal
-    left_intensity = inner_roi(gray, left).mean()
-    right_intensity = inner_roi(gray, right).mean()
+    # Seuil pour considérer qu'une case est cochée
+    checkbox_threshold = 0.4
     
-    # Seuil d'intensité pour considérer qu'une case est cochée
-    intensity_threshold = 180  # Plus sombre que 180 = cochée
-    
-    # Logique simple basée sur l'intensité
-    left_checked = left_intensity < intensity_threshold
-    right_checked = right_intensity < intensity_threshold
-    
-    if left_checked and not right_checked:
+    # Logique simple : prendre la case avec le score le plus élevé
+    if s_left > s_right and s_left >= checkbox_threshold:
         return "A", float(s_left)  # Case gauche (OUI) = A
-    elif right_checked and not left_checked:
+    elif s_right > s_left and s_right >= checkbox_threshold:
         return "B", float(s_right)  # Case droite (NON) = B
-    elif left_checked and right_checked:
-        # Les deux cases cochées - prendre la plus sombre
-        if left_intensity < right_intensity:
-            return "A", float(s_left)  # Case gauche (OUI) = A
+    elif s_left >= checkbox_threshold and s_right >= checkbox_threshold:
+        # Les deux cases cochées - prendre la plus forte
+        if s_left > s_right:
+            return "A", float(s_left)
         else:
-            return "B", float(s_right)  # Case droite (NON) = B
+            return "B", float(s_right)
     else:
         # Aucune case suffisamment cochée
         return "", float(abs(s_left - s_right))
