@@ -30,12 +30,9 @@ def adaptive_bin(gray: np.ndarray, block_size=35, C=10) -> np.ndarray:
         cv2.THRESH_BINARY_INV, int(block_size) | 1, int(C)
     )
 
-def find_checkbox_contours(
-    bin_img: np.ndarray,
-    min_area=120,
-    max_area=6000,
-    squareness_tol=0.40
-) -> List[Tuple[int, int, int, int]]:
+def find_checkbox_contours(bin_img: np.ndarray,
+                           min_area=120, max_area=6000,
+                           squareness_tol=0.40) -> List[Tuple[int,int,int,int]]:
     contours, _ = cv2.findContours(bin_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     H, W = bin_img.shape[:2]
     boxes = []
@@ -44,51 +41,52 @@ def find_checkbox_contours(
         area = w * h
         if area < min_area or area > max_area:
             continue
-        # Carré ±
+        # Carré +/-
         ratio = abs(w - h) / max(w, h)
         if ratio > squareness_tol:
             continue
-        # éviter les bords
+        # éviter les bords (très permissif)
         if x < 1 or y < 1 or x + w > W - 1 or y + h > H - 1:
             continue
         boxes.append((x, y, w, h))
     return boxes
 
-def inner_roi(gray: np.ndarray, box: Tuple[int, int, int, int], margin: float = 0.18) -> np.ndarray:
+def inner_roi(gray: np.ndarray, box: Tuple[int,int,int,int], margin: float = 0.18) -> np.ndarray:
     x, y, w, h = box
     mx, my = int(w * margin), int(h * margin)
     return gray[y + my: y + h - my, x + mx: x + w - mx]
 
 def mark_score(roi_gray: np.ndarray) -> float:
     """
-    Score 0..1 indiquant si la case est cochée (noircissage ou croix).
-    Combine:
-      - 1 - mean_intensity/255
-      - proportion sombre (Otsu local)
-      - présence de lignes (croix) via Hough
+    Score 0..1 indiquant si la case est cochée (noircissage).
+    Version basée sur la proportion de pixels sombres.
     """
     if roi_gray.size == 0:
         return 0.0
 
-    mean_dark = 1.0 - (roi_gray.mean() / 255.0)
-
-    # densité sombre relative
-    _, thr = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    dark_ratio = float((thr == 0).sum()) / float(roi_gray.size)
-
-    # croix (2 segments ou plus)
-    edges = cv2.Canny(roi_gray, 40, 120, L2gradient=True)
-    lines = cv2.HoughLinesP(
-        edges, 1, np.pi / 180, threshold=10,
-        minLineLength=max(4, roi_gray.shape[1] // 3),
-        maxLineGap=4
-    )
-    line_bonus = 0.18 if (lines is not None and len(lines) >= 2) else 0.0
-
-    score = 0.55 * mean_dark + 0.45 * dark_ratio + line_bonus
+    # Méthode 1: Intensité moyenne
+    mean_intensity = roi_gray.mean()
+    
+    # Méthode 2: Proportion de pixels sombres
+    dark_pixels = np.sum(roi_gray < 100)  # Pixels < 100
+    dark_ratio = dark_pixels / roi_gray.size
+    
+    # Méthode 3: Variance (cases noircies ont souvent une variance plus faible)
+    variance = np.var(roi_gray)
+    variance_score = max(0, 1.0 - (variance / (255**2)))
+    
+    # Combinaison des méthodes
+    intensity_score = 1.0 - (mean_intensity / 255.0)
+    
+    # Score final pondéré
+    score = 0.6 * intensity_score + 0.3 * dark_ratio + 0.1 * variance_score
+    
+    # Debug: afficher les valeurs pour comprendre le problème
+    print(f"Intensité: {mean_intensity:.1f}, Sombre: {dark_ratio:.3f}, Variance: {variance_score:.3f} -> Score: {score:.3f}")
+    
     return float(max(0.0, min(1.0, score)))
 
-def group_into_rows(boxes: List[Tuple[int, int, int, int]], y_tol: int = 12) -> List[List[Tuple[int, int, int, int]]]:
+def group_into_rows(boxes: List[Tuple[int,int,int,int]], y_tol: int = 12) -> List[List[Tuple[int,int,int,int]]]:
     if not boxes:
         return []
     boxes_sorted = sorted(boxes, key=lambda b: (b[1], b[0]))
@@ -104,14 +102,11 @@ def group_into_rows(boxes: List[Tuple[int, int, int, int]], y_tol: int = 12) -> 
     rows = [sorted(r, key=lambda b: b[0]) for r in rows]
     return rows
 
-def pair_by_proximity(
-    row: List[Tuple[int, int, int, int]],
-    x_gap_tol: int = 14
-) -> List[Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int]]]:
+def pair_by_proximity(row: List[Tuple[int,int,int,int]], x_gap_tol: int = 14) -> List[Tuple[Tuple[int,int,int,int], Tuple[int,int,int,int]]]:
     pairs = []
     i = 0
     while i < len(row) - 1:
-        b1, b2 = row[i], row[i + 1]
+        b1, b2 = row[i], row[i+1]
         gap = b2[0] - (b1[0] + b1[2])
         if gap <= max(x_gap_tol, int(0.7 * b1[2])):
             pairs.append((b1, b2))
@@ -120,31 +115,41 @@ def pair_by_proximity(
             i += 1
     return pairs
 
-def decide_AB(
-    gray: np.ndarray,
-    pair: Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int]],
-    thresh: float
-) -> Tuple[str, float]:
+def decide_AB(gray: np.ndarray,
+              pair: Tuple[Tuple[int,int,int,int], Tuple[int,int,int,int]],
+              thresh: float) -> Tuple[str, float]:
     left, right = pair
-    # scores robustes
     s_left = mark_score(inner_roi(gray, left))
     s_right = mark_score(inner_roi(gray, right))
 
-    # logique : exactement une case au-dessus du seuil
-    if (s_left >= thresh) ^ (s_right >= thresh):
-        if s_left > s_right:
-            return "A", float(s_left - s_right)
+    # Utiliser l'intensité brute comme critère principal
+    left_intensity = inner_roi(gray, left).mean()
+    right_intensity = inner_roi(gray, right).mean()
+    
+    # Seuil d'intensité pour considérer qu'une case est cochée
+    intensity_threshold = 180  # Plus sombre que 180 = cochée
+    
+    # Logique simple basée sur l'intensité
+    left_checked = left_intensity < intensity_threshold
+    right_checked = right_intensity < intensity_threshold
+    
+    if left_checked and not right_checked:
+        return "A", float(s_left)  # Case gauche (OUI) = A
+    elif right_checked and not left_checked:
+        return "B", float(s_right)  # Case droite (NON) = B
+    elif left_checked and right_checked:
+        # Les deux cases cochées - prendre la plus sombre
+        if left_intensity < right_intensity:
+            return "A", float(s_left)  # Case gauche (OUI) = A
         else:
-            return "B", float(s_right - s_left)
+            return "B", float(s_right)  # Case droite (NON) = B
+    else:
+        # Aucune case suffisamment cochée
+        return "", float(abs(s_left - s_right))
 
-    # en cas d'ambiguïté ou aucune : vide
-    return "", float(abs(s_left - s_right))
-
-def draw_debug(
-    img: np.ndarray,
-    pairs: List[Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int]]],
-    results: List[str]
-) -> np.ndarray:
+def draw_debug(img: np.ndarray,
+               pairs: List[Tuple[Tuple[int,int,int,int], Tuple[int,int,int,int]]],
+               results: List[str]) -> np.ndarray:
     vis = img.copy()
     for (left, right), r in zip(pairs, results):
         colL = colR = (180, 180, 180)  # gris (NA)
@@ -156,12 +161,10 @@ def draw_debug(
             cv2.rectangle(vis, (x, y), (x + w, y + h), col, 2)
     return vis
 
-def split_into_5_columns(
-    pairs: List[Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int]]]
-) -> List[List]:
+def split_into_5_columns(pairs: List[Tuple[Tuple[int,int,int,int], Tuple[int,int,int,int]]]) -> List[List]:
     """
     Sépare les paires en 5 colonnes par grandes coupures en X.
-    Retourne [col1, col2, col3, col4, col5] (une éventuelle 6e est ignorée).
+    Retourne [col1, col2, col3, col4, col5] (la 6e éventuelle est ignorée).
     """
     if not pairs:
         return [[], [], [], [], []]
@@ -169,22 +172,23 @@ def split_into_5_columns(
     order = np.argsort(centers_x)
     sx = centers_x[order]
 
+    # Chercher les 4 + grosses ruptures pour découper en 5 colonnes
     gaps = np.diff(sx)
     if len(gaps) < 4:
-        # fallback : 5 tranches égales
+        # fallback simple : 5 tranches égales
         cuts = np.linspace(0, len(order), 6, dtype=int)
     else:
         top_idx = np.argsort(gaps)[-4:]
         cut_positions = np.sort(top_idx + 1)
         cuts = np.concatenate(([0], cut_positions, [len(order)]))
 
-    cols_idx = [order[cuts[i]:cuts[i + 1]].tolist() for i in range(5)]
+    cols_idx = [order[cuts[i]:cuts[i+1]].tolist() for i in range(5)]
     columns = [[pairs[k] for k in idxs] for idxs in cols_idx]
     return columns
 
 def sort_25_rows_per_column(columns: List[List], expected_rows=25) -> List[Tuple]:
     """
-    Trie chaque colonne verticalement et tronque/complète à expected_rows lignes.
+    Trie chaque colonne verticalement et tronque/complète à 25 lignes.
     """
     normalized = []
     for col in columns[:5]:
@@ -192,6 +196,7 @@ def sort_25_rows_per_column(columns: List[List], expected_rows=25) -> List[Tuple
         if len(col_sorted) >= expected_rows:
             col_sorted = col_sorted[:expected_rows]
         else:
+            # compléter par placeholders vides si besoin
             pad = expected_rows - len(col_sorted)
             col_sorted += [None] * pad
         normalized.append(col_sorted)
@@ -206,19 +211,13 @@ st.title("Lecture de grilles OUI/NON → Excel (A/B)")
 with st.sidebar:
     st.header("Paramètres")
     expected_questions = st.number_input("Nombre de questions", min_value=1, value=125, step=1)
-    questions_per_col = st.number_input("Questions par colonne", min_value=1, max_value=50, value=25, step=1)
-
-    # Seuil de marquage
-    thresh = st.slider("Seuil de marquage (0–1)", min_value=0.05, max_value=0.80, value=0.22, step=0.01)
-
-    # Détection de contours : bornes VALIDES
-    min_area = st.number_input("Aire min. case", min_value=10, max_value=10000, value=120, step=10)
-    max_area = st.number_input("Aire max. case", min_value=200, max_value=30000, value=6000, step=50)
-    squareness_tol = st.slider("Tolérance carré", min_value=0.0, max_value=0.8, value=0.40, step=0.01)
-
-    # Groupements
-    y_tol = st.number_input("Tolérance verticale (lignes)", min_value=2, max_value=60, value=12, step=1)
-    x_gap_tol = st.number_input("Tolérance horizontale (paires)", min_value=2, max_value=80, value=14, step=1)
+    questions_per_col = st.number_input("Questions par colonne", 1, 50, 25, 1)
+    thresh = st.slider("Seuil de marquage (0–1)", 0.05, 0.80, 0.10, 0.01)
+    min_area = st.number_input("Aire min. case", 50, 10000, 50, 10)
+    max_area = st.number_input("Aire max. case", 200, 30000, 25000, 50)
+    squareness_tol = st.slider("Tolérance carré", 0.0, 0.8, 0.85, 0.01)
+    y_tol = st.number_input("Tolérance verticale (lignes)", 2, 60, 35, 1)
+    x_gap_tol = st.number_input("Tolérance horizontale (paires)", 2, 80, 40, 1)
 
 uploaded = st.file_uploader("Dépose une image (JPG/PNG)", type=["png", "jpg", "jpeg"])
 
@@ -228,12 +227,7 @@ if uploaded is not None:
     bin_img = adaptive_bin(gray)
 
     # 1) Détection des cases
-    boxes = find_checkbox_contours(
-        bin_img,
-        min_area=int(min_area),
-        max_area=int(max_area),
-        squareness_tol=float(squareness_tol),
-    )
+    boxes = find_checkbox_contours(bin_img, min_area=min_area, max_area=max_area, squareness_tol=squareness_tol)
     rows = group_into_rows(boxes, y_tol=int(y_tol))
 
     # 2) Paires OUI/NON par ligne
@@ -241,17 +235,26 @@ if uploaded is not None:
     for row in rows:
         all_pairs.extend(pair_by_proximity(row, x_gap_tol=int(x_gap_tol)))
 
-    # 3) Forcer la structure 5 colonnes × N (écarte tout surplus)
-    cols = split_into_5_columns(all_pairs)
+    # 3) Forcer la structure 5 colonnes × 25 (écarte la 6e colonne 126–145)
+    cols = split_into_5_columns(all_pairs)           # 5 colonnes
     cols = sort_25_rows_per_column(cols, expected_rows=int(questions_per_col))
-    pairs_5xN = [p for col in cols[:5] for p in col if p is not None]
+    pairs_5x25 = [p for col in cols[:5] for p in col if p is not None]
 
     # 4) Décision A/B/"" question par question
     results, confidences = [], []
-    for pair in pairs_5xN:
-        r, c = decide_AB(gray, pair, thresh=float(thresh))
+    debug_scores = []  # Pour le débogage
+    for i, pair in enumerate(pairs_5x25):
+        r, c = decide_AB(gray, pair, thresh=thresh)
         results.append(r)
         confidences.append(c)
+        
+        # Calculer les scores individuels pour le débogage
+        left, right = pair
+        s_left = mark_score(inner_roi(gray, left))
+        s_right = mark_score(inner_roi(gray, right))
+        left_intensity = inner_roi(gray, left).mean()
+        right_intensity = inner_roi(gray, right).mean()
+        debug_scores.append((s_left, s_right, r, left, right, left_intensity, right_intensity))
 
     # 5) Tronquer/padder à expected_questions (sécurité)
     if len(results) >= expected_questions:
@@ -262,7 +265,7 @@ if uploaded is not None:
         results += [""] * pad
         confidences += [0.0] * pad
 
-    # 6) DataFrame EXACTEMENT comme ton modèle : Q1..Qn, 2e ligne = A/B/"".
+    # 6) DataFrame EXACTEMENT comme ton modèle : entêtes Q1..Qn, 2e ligne = A/B/""
     cols_names = [f"Q{i}" for i in range(1, expected_questions + 1)]
     df_ab = pd.DataFrame([[*results]], columns=cols_names)
     df_conf = pd.DataFrame([[round(c, 3) for c in confidences]], columns=cols_names)
@@ -271,17 +274,47 @@ if uploaded is not None:
     c1, c2 = st.columns([3, 2], gap="large")
     with c1:
         st.subheader("Cases détectées (vert=A, rouge=B, gris=NA)")
-        debug = draw_debug(img_bgr, pairs_5xN[:expected_questions], results[:expected_questions])
+        debug = draw_debug(img_bgr, pairs_5x25, results)
         st.image(cv2.cvtColor(debug, cv2.COLOR_BGR2RGB), use_container_width=True)
-        st.caption(
-            f"Paires détectées: {len(all_pairs)} | "
-            f"Utilisées (5×{questions_per_col}): {len(pairs_5xN)}"
-        )
+        st.caption(f"Paires détectées: {len(all_pairs)} | Utilisées (5×{questions_per_col}): {len(pairs_5x25)}")
+        
+        # Affichage des détails de détection
+        with st.expander("Détails de détection"):
+            st.write(f"**Cases détectées:** {len(boxes)}")
+            st.write(f"**Lignes groupées:** {len(rows)}")
+            st.write(f"**Paires formées:** {len(all_pairs)}")
+            st.write(f"**Colonnes détectées:** {len(cols)}")
+            st.write(f"**Paires finales:** {len(pairs_5x25)}")
+            
+            # Afficher les coordonnées des premières paires pour debug
+            if pairs_5x25:
+                st.write("**Coordonnées des 10 premières paires:**")
+                for i, (left, right) in enumerate(pairs_5x25[:10]):
+                    st.write(f"Q{i+1}: Gauche({left[0]},{left[1]}) Droite({right[0]},{right[1]})")
     with c2:
         st.subheader("Aperçu Excel (A/B)")
         st.dataframe(df_ab, use_container_width=True, height=180)
         with st.expander("Confiance (0–1)"):
             st.dataframe(df_conf, use_container_width=True, height=140)
+        
+        # Affichage des scores de débogage pour toutes les questions détectées
+        if debug_scores:
+            st.subheader(f"Scores de débogage ({len(debug_scores)} questions détectées)")
+            debug_data = []
+            for i in range(len(debug_scores)):
+                s_left, s_right, result, left_box, right_box, left_int, right_int = debug_scores[i]
+                debug_data.append({
+                    "Question": i+1,
+                    "Score Gauche": f"{s_left:.3f}",
+                    "Score Droite": f"{s_right:.3f}",
+                    "Intensité Gauche": f"{left_int:.1f}",
+                    "Intensité Droite": f"{right_int:.1f}",
+                    "Résultat": result,
+                    "X Gauche": left_box[0],
+                    "X Droite": right_box[0],
+                    "Différence": f"{abs(s_left - s_right):.3f}"
+                })
+            st.dataframe(pd.DataFrame(debug_data), use_container_width=True)
 
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as w:
